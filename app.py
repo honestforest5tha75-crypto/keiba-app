@@ -7,14 +7,13 @@ import re
 # ページ設定
 st.set_page_config(page_title="新・競馬投資戦略マシーン", layout="wide")
 
-st.title("🏇 新・競馬投資戦略マシーン（騎手・馬体・独自指数型）")
-st.write("オッズ（他人の評価）を一切排除し、騎手の実績、年齢、斤量から馬の真の実力をスコア化して買い目を算出します。")
+st.title("🏇 新・競馬投資戦略マシーン（本命＆大穴 独立分析型）")
+st.write("騎手・馬齢・斤量のデータから「堅実スコア」と「大穴スコア」の2軸を計算し、手堅い的中と一発逆転の両方を提案します。")
 
 st.sidebar.header("⚙️ 運用条件設定")
 race_id = st.sidebar.text_input("12桁のレースIDを入力", value="202610020705", max_chars=12)
 budget = st.sidebar.number_input("1レースの軍資金（円）", min_value=1000, max_value=100000, step=1000, value=5000)
 
-# リーディング上位騎手のボーナスリスト（システム独自の評価基準）
 TOP_JOCKEYS = ["川田", "ルメール", "戸崎", "松山", "横山武", "岩田望", "武豊", "坂井", "鮫島克", "菅原明"]
 
 def get_auto_url(r_id):
@@ -74,90 +73,100 @@ if st.button("最新データを取得して予測を実行", type="primary"):
 
                     results = []
                     for _, row in target_df.iterrows():
-                        # 馬番
                         baban_str = str(row[c_umaban]) if c_umaban else ""
                         baban_match = re.search(r'\d+', baban_str)
                         if not baban_match: continue
                         umaban = int(baban_match.group())
                         
-                        # 馬名
                         name_str = str(row[c_umamei]) if c_umamei else "不明"
                         name = re.sub(r'[\s　]+', ' ', name_str).split()[0]
                         if name == "nan" or not name: continue
                         
-                        # 騎手
                         kishu_str = str(row[c_kishu]) if c_kishu else "不明"
                         kishu = re.sub(r'[\s　]+', '', kishu_str)
                         
-                        # 性齢
                         seirei = str(row[c_seirei]) if c_seirei else "不明"
                         
-                        # 斤量
                         kinryo_str = str(row[c_kinryo]) if c_kinryo else ""
                         kinryo_match = re.search(r'\d+\.\d+', kinryo_str)
                         kinryo = float(kinryo_match.group()) if kinryo_match else 55.0
                         
                         # ==========================================
-                        # 独自の期待値スコア計算（オッズに依存しない）
+                        # エンジン1：堅実スコア（本命狙い用）
                         # ==========================================
-                        score = 50.0  # 基礎点
+                        solid_score = 50.0
+                        if any(top_j in kishu for top_j in TOP_JOCKEYS): solid_score += 15.0
+                        if "4" in seirei: solid_score += 10.0
+                        elif "5" in seirei: solid_score += 5.0
+                        solid_score += ((55.0 - kinryo) * 2.0)
+                        solid_score += (8 - abs(9 - umaban)) * 0.2
                         
-                        # 1. 騎手ボーナス（トップジョッキーが乗る馬は能力を引き出しやすい）
-                        is_top_jockey = any(top_j in kishu for top_j in TOP_JOCKEYS)
-                        if is_top_jockey:
-                            score += 15.0
-                        
-                        # 2. 年齢ボーナス（競走馬としてのピークである4〜5歳を評価）
-                        if "4" in seirei:
-                            score += 10.0
-                        elif "5" in seirei:
-                            score += 5.0
+                        # ==========================================
+                        # エンジン2：大穴スコア（波乱狙い用）
+                        # ==========================================
+                        ana_score = 50.0
+                        # 有名騎手は過剰人気になるため大穴ロジックでは減点
+                        if any(top_j in kishu for top_j in TOP_JOCKEYS): 
+                            ana_score -= 10.0
+                        else:
+                            ana_score += 10.0 # マイナー騎手の思い切った騎乗を評価
                             
-                        # 3. 斤量（負担重量）によるスピード補正（軽いほどプラス）
-                        # 基準を55kgとし、それより軽ければ加点、重ければ減点
-                        weight_diff = 55.0 - kinryo
-                        score += (weight_diff * 2.0)
+                        # 軽い斤量を極端に高く評価（逃げ残り・追い込み警戒）
+                        ana_score += ((55.0 - kinryo) * 5.0)
                         
-                        # 4. 同点回避のための微細な乱数要素（馬番から算出）
-                        # 内枠・外枠の有利不利を擬似的に表現（ここでは真ん中の枠を少しだけ評価）
-                        frame_bonus = (8 - abs(9 - umaban)) * 0.2
-                        score += frame_bonus
-                        
+                        # 3歳馬（成長力）や6歳以上（実績馬の復活）を評価
+                        if "3" in seirei or "6" in seirei or "7" in seirei:
+                            ana_score += 10.0
+                            
+                        # 展開がハマれば怖い最内枠・大外枠を評価
+                        if umaban <= 2 or umaban >= 15:
+                            ana_score += 10.0
+
                         results.append({
                             "馬番": umaban,
                             "馬名": name,
                             "騎手": kishu,
                             "性齢": seirei,
                             "斤量": kinryo,
-                            "総合スコア": round(score, 1)
+                            "堅実スコア": round(solid_score, 1),
+                            "大穴スコア": round(ana_score, 1)
                         })
                         
                     if not results:
                         st.error("⚠️ 有効な出走馬データが抽出できませんでした。")
                     else:
-                        # 総合スコアで明確に順位付け（降順ソート）
-                        final_df = pd.DataFrame(results).sort_values("総合スコア", ascending=False).reset_index(drop=True)
-                        st.subheader("📊 解析完了：独自スピード＆騎手スコア順")
-                        st.dataframe(final_df, use_container_width=True)
+                        base_df = pd.DataFrame(results)
+                        solid_df = base_df.sort_values("堅実スコア", ascending=False).reset_index(drop=True)
+                        ana_df = base_df.sort_values("大穴スコア", ascending=False).reset_index(drop=True)
+                        
+                        st.subheader("📊 解析完了：全頭のスコア一覧")
+                        st.dataframe(solid_df, use_container_width=True)
                         
                         st.markdown("---")
-                        st.subheader("🎯 推奨フォーメーション")
+                        st.subheader("🎯 投資ポートフォリオ提案")
                         
-                        jiku = final_df.iloc[0]
-                        partners = final_df.iloc[1:4]["馬番"].tolist() if len(final_df) > 1 else []
-                        hi_horses = final_df.iloc[4:7]["馬番"].tolist() if len(final_df) > 4 else []
+                        # 堅実プランの抽出
+                        jiku_solid = solid_df.iloc[0]
+                        partners_solid = solid_df.iloc[1:4]["馬番"].tolist() if len(solid_df) > 1 else []
+                        
+                        # 大穴プランの抽出
+                        jiku_ana = ana_df.iloc[0]
+                        partners_ana = ana_df.iloc[1:3]["馬番"].tolist() if len(ana_df) > 1 else []
+                        hi_horses_ana = ana_df.iloc[3:6]["馬番"].tolist() if len(ana_df) > 3 else []
                         
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.success(f"🛡️ **コア投資（予算60%）：ワイド**\n\n"
-                                       f"・**軸（スコア1位）**: {jiku['馬番']}番（{jiku['馬名']}）\n\n"
-                                       f"・**相手（スコア2〜4位）**: {', '.join(map(str, partners))}番\n\n"
-                                       f"・**資金配分**: 各 {int(budget * 0.6 / max(len(partners), 1) // 100) * 100}円")
+                            st.success(f"🛡️ **堅実プラン（予算60%）：ワイド中心**\n\n"
+                                       f"*堅実スコア上位で構成し、手堅く元本回収を狙うシェルターです。*\n\n"
+                                       f"・**軸（本命）**: {jiku_solid['馬番']}番（{jiku_solid['馬名']}）\n\n"
+                                       f"・**相手**: {', '.join(map(str, partners_solid))}番\n\n"
+                                       f"・**資金配分**: 各 {int(budget * 0.6 / max(len(partners_solid), 1) // 100) * 100}円")
                         with col2:
-                            st.error(f"🚀 **サテライト投資（予算40%）：3連複**\n\n"
-                                     f"・**軸**: {jiku['馬番']}番\n\n"
-                                     f"・**相手**: {', '.join(map(str, partners))}番\n\n"
-                                     f"・**紐**: {', '.join(map(str, partners + hi_horses))}番\n\n"
+                            st.error(f"🚀 **大穴プラン（予算40%）：3連複中心**\n\n"
+                                     f"*過小評価されている軽斤量馬やマイナー騎手を軸に一発を狙います。*\n\n"
+                                     f"・**軸（大穴）**: {jiku_ana['馬番']}番（{jiku_ana['馬名']}）\n\n"
+                                     f"・**相手**: {', '.join(map(str, partners_ana))}番\n\n"
+                                     f"・**紐**: {', '.join(map(str, partners_ana + hi_horses_ana))}番\n\n"
                                      f"・**資金配分**: 残り {int(budget * 0.4 // 100) * 100}円 を均等配分")
 
         except Exception as e:
