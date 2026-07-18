@@ -13,7 +13,7 @@ st.write("12桁のレースIDから中央・地方を自動判別し、堅実な
 # サイドバー：条件設定
 # ----------------------------------------------------
 st.sidebar.header("⚙️ 運用条件設定")
-race_id = st.sidebar.text_input("12桁のレースIDを入力", value="202610010111", max_chars=12)
+race_id = st.sidebar.text_input("12桁のレースIDを入力", value="202610020705", max_chars=12)
 budget = st.sidebar.number_input("1レースの軍資金（円）", min_value=1000, max_value=100000, step=1000, value=5000)
 
 strategy = st.sidebar.radio("📊 投資戦略（モード）を選択", 
@@ -45,39 +45,52 @@ if st.button("最新データを取得してフォーメーションを構築", 
         st.info(f"🔍 判定結果: **{race_type}** のページへアクセスしています...")
         
         try:
-            headers = {"User-Agent": "Mozilla/5.0"}
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             response = requests.get(url, headers=headers)
             response.encoding = response.apparent_encoding
             
             dfs = pd.read_html(io.StringIO(response.text))
             
             raw_df = pd.DataFrame()
+            # 【究極の修正】JRAの複雑な表構造（MultiIndex）を強制的に平坦化して検索
             for temp_df in dfs:
-                # カラムの平坦化（JRAの複雑な表構造に対応）
-                temp_cols = temp_df.columns.get_level_values(-1) if isinstance(temp_df.columns, pd.MultiIndex) else temp_df.columns
+                flat_cols = []
+                for col in temp_df.columns:
+                    # 複数段の見出しを1つの文字列に合体させる
+                    if isinstance(col, tuple):
+                        col_str = "_".join([str(c) for c in col])
+                    else:
+                        col_str = str(col)
+                    flat_cols.append(col_str)
                 
-                # 【修正の核心】「馬番(または枠番)」と「馬名」の両方が揃っている本物の出馬表だけを厳格に探す
-                col_list = list(temp_cols)
-                has_horse_num = ("馬番" in col_list) or ("枠番" in col_list)
-                has_horse_name = "馬名" in col_list
+                temp_df.columns = flat_cols
+                
+                # 結合した列名のどこかに「馬番(枠番)」と「馬名」が含まれていれば確実に出馬表
+                has_horse_num = any("馬番" in c or "枠番" in c for c in flat_cols)
+                has_horse_name = any("馬名" in c for c in flat_cols)
                 
                 if has_horse_num and has_horse_name:
                     raw_df = temp_df
-                    raw_df.columns = temp_cols
                     break
             
             if raw_df.empty:
-                st.warning("⚠️ 出馬表のデータが見つかりませんでした。URLやレースIDが正しいか確認してください。")
+                st.warning("⚠️ 出馬表のデータが見つかりませんでした。ページが読み込めないか、まだ出走馬が確定していない可能性があります。")
+                # 万が一のためのデバッグ表示（原因特定用）
+                with st.expander("📝 デバッグ情報（プログラムが読み取った列名）"):
+                    for i, tdf in enumerate(dfs):
+                        st.write(f"テーブル {i}:", tdf.columns.tolist())
             else:
+                # 列名のあいまい検索（平坦化した列名から合致するものを探す）
+                col_baban = next((c for c in raw_df.columns if "馬番" in c), None)
+                if not col_baban:
+                    col_baban = next((c for c in raw_df.columns if "枠番" in c), None)
+                col_bamei = next((c for c in raw_df.columns if "馬名" in c), None)
+                col_ninki = next((c for c in raw_df.columns if "人気" in c), None)
+                col_odds = next((c for c in raw_df.columns if "オッズ" in c or "単勝" in c), None)
+
                 cleaned_data = []
                 for _, row in raw_df.iterrows():
-                    # 馬番の取得（地方・中央の表記揺れに対応）
-                    horse_num = None
-                    if "馬番" in raw_df.columns:
-                        horse_num = row["馬番"]
-                    elif "枠番" in raw_df.columns:
-                        horse_num = row["枠番"]
-                        
+                    horse_num = row[col_baban] if col_baban else None
                     if pd.isna(horse_num): continue
                     
                     try:
@@ -85,20 +98,17 @@ if st.button("最新データを取得してフォーメーションを構築", 
                     except ValueError:
                         continue
                         
-                    horse_name = row.get("馬名", "")
-                    if hasattr(horse_name, "str"):
-                        horse_name = str(horse_name).split()[0]
-                    else:
-                        horse_name = str(horse_name)
+                    horse_name = row[col_bamei] if col_bamei else ""
+                    # 余分な空白や記号を削除してクリーンにする
+                    horse_name = str(horse_name).replace(" ", " ").split()[0]
                     
-                    # 人気・オッズの取得
-                    popularity = row.get("人気", None)
-                    odds = row.get("オッズ", row.get("単勝", None))
+                    popularity = row[col_ninki] if col_ninki else None
+                    odds = row[col_odds] if col_odds else None
                     
                     try:
                         pop_val = int(float(str(popularity).strip()))
                     except (ValueError, TypeError, AttributeError):
-                        pop_val = 99  # 人気不明の場合は最下位扱い
+                        pop_val = 99
                         
                     cleaned_data.append({
                         "馬番": h_num,
@@ -129,7 +139,6 @@ if st.button("最新データを取得してフォーメーションを構築", 
                         hi_range = (7, 12)
                         mode_msg = "実力がありながら過小評価されている中穴を軸に、人気馬と超大穴を絡めて一発を狙うロジックです。"
 
-                    # エラー回避のための安全なデータ取得
                     jiku_horse = df.iloc[jiku_index]["馬番"] if len(df) > jiku_index else "-"
                     jiku_name = df.iloc[jiku_index]["馬名"] if len(df) > jiku_index else "-"
                     
