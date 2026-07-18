@@ -45,46 +45,48 @@ if st.button("最新データを取得してフォーメーションを構築", 
         st.info(f"🔍 判定結果: **{race_type}** のページへアクセスしています...")
         
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            # サーバーに弾かれないよう、標準的なブラウザのフリをする
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
+            }
             response = requests.get(url, headers=headers)
             response.encoding = response.apparent_encoding
             
             dfs = pd.read_html(io.StringIO(response.text))
             
             raw_df = pd.DataFrame()
-            # 【究極の修正】JRAの複雑な表構造（MultiIndex）を強制的に平坦化して検索
-            for temp_df in dfs:
-                flat_cols = []
-                for col in temp_df.columns:
-                    # 複数段の見出しを1つの文字列に合体させる
-                    if isinstance(col, tuple):
-                        col_str = "_".join([str(c) for c in col])
-                    else:
-                        col_str = str(col)
-                    flat_cols.append(col_str)
+            
+            # 【最終修正】見出しに隠れた空白・改行を完全に無力化する
+            for df in dfs:
+                clean_cols = []
+                for col in df.columns:
+                    # 表が複雑な階層になっている場合は一番下の文字だけ取る
+                    val = col[-1] if isinstance(col, tuple) else col
+                    # 空白や改行をすべて消去し、純粋な文字列にする
+                    clean_name = str(val).replace(" ", "").replace(" ", "").replace("\n", "")
+                    clean_cols.append(clean_name)
                 
-                temp_df.columns = flat_cols
+                df.columns = clean_cols
                 
-                # 結合した列名のどこかに「馬番(枠番)」と「馬名」が含まれていれば確実に出馬表
-                has_horse_num = any("馬番" in c or "枠番" in c for c in flat_cols)
-                has_horse_name = any("馬名" in c for c in flat_cols)
-                
-                if has_horse_num and has_horse_name:
-                    raw_df = temp_df
+                # 綺麗にした文字の中に「馬名」と「番」があれば出馬表と断定
+                if any("馬名" in c for c in clean_cols) and any("番" in c for c in clean_cols):
+                    raw_df = df
                     break
             
+            # 万が一見つからなかった場合、強引にページ内の最初の表を使う（フォールバック）
+            if raw_df.empty and len(dfs) > 0:
+                raw_df = dfs[0]
+                raw_df.columns = [str(c[-1]).replace(" ", "").replace(" ", "").replace("\n", "") if isinstance(c, tuple) else str(c).replace(" ", "").replace(" ", "").replace("\n", "") for c in raw_df.columns]
+
             if raw_df.empty:
-                st.warning("⚠️ 出馬表のデータが見つかりませんでした。ページが読み込めないか、まだ出走馬が確定していない可能性があります。")
-                # 万が一のためのデバッグ表示（原因特定用）
-                with st.expander("📝 デバッグ情報（プログラムが読み取った列名）"):
-                    for i, tdf in enumerate(dfs):
-                        st.write(f"テーブル {i}:", tdf.columns.tolist())
+                st.error("⚠️ ページ内にデータ表が存在しません。レースIDが誤っているか、netkeibaの仕様が変更された可能性があります。")
             else:
-                # 列名のあいまい検索（平坦化した列名から合致するものを探す）
-                col_baban = next((c for c in raw_df.columns if "馬番" in c), None)
-                if not col_baban:
-                    col_baban = next((c for c in raw_df.columns if "枠番" in c), None)
-                col_bamei = next((c for c in raw_df.columns if "馬名" in c), None)
+                # 名前が微妙に違う列（例：「馬番」「番」）を安全に探し出す
+                col_baban = next((c for c in raw_df.columns if "番" in c and "枠" not in c), None)
+                if not col_baban: col_baban = next((c for c in raw_df.columns if "番" in c), raw_df.columns[1] if len(raw_df.columns)>1 else None)
+                
+                col_bamei = next((c for c in raw_df.columns if "馬名" in c), raw_df.columns[3] if len(raw_df.columns)>3 else None)
                 col_ninki = next((c for c in raw_df.columns if "人気" in c), None)
                 col_odds = next((c for c in raw_df.columns if "オッズ" in c or "単勝" in c), None)
 
@@ -99,8 +101,8 @@ if st.button("最新データを取得してフォーメーションを構築", 
                         continue
                         
                     horse_name = row[col_bamei] if col_bamei else ""
-                    # 余分な空白や記号を削除してクリーンにする
-                    horse_name = str(horse_name).replace(" ", " ").split()[0]
+                    # 余計な記号や改行を排除
+                    horse_name = str(horse_name).replace(" ", " ").replace("\n", " ").split()[0]
                     
                     popularity = row[col_ninki] if col_ninki else None
                     odds = row[col_odds] if col_odds else None
@@ -118,7 +120,7 @@ if st.button("最新データを取得してフォーメーションを構築", 
                     })
                 
                 if not cleaned_data:
-                    st.warning("⚠️ ページから有効な出走馬データを抽出できませんでした。")
+                    st.warning("⚠️ 表は抽出しましたが、有効な出走馬データがありませんでした。")
                 else:
                     df = pd.DataFrame(cleaned_data).sort_values("人気").reset_index(drop=True)
                     
@@ -163,5 +165,5 @@ if st.button("最新データを取得してフォーメーションを構築", 
                     st.info(f"💡 **システムからのアドバイス**\n{mode_msg}")
                 
         except Exception as e:
-            st.error(f"❌ データの取得・解析中にエラーが発生しました。")
+            st.error(f"❌ 通信または解析エラーが発生しました。")
             st.caption(f"エラー詳細: {e}")
