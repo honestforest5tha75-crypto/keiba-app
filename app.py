@@ -16,7 +16,6 @@ st.sidebar.header("⚙️ 運用条件設定")
 race_id = st.sidebar.text_input("12桁のレースIDを入力", value="202610010111", max_chars=12)
 budget = st.sidebar.number_input("1レースの軍資金（円）", min_value=1000, max_value=100000, step=1000, value=5000)
 
-# ★新規追加：モード切り替えスイッチ
 strategy = st.sidebar.radio("📊 投資戦略（モード）を選択", 
                             ["🛡️ 堅実・本命重視（的中率優先）", "🔥 大穴・波乱狙い（回収率爆発）"])
 
@@ -54,18 +53,31 @@ if st.button("最新データを取得してフォーメーションを構築", 
             
             raw_df = pd.DataFrame()
             for temp_df in dfs:
+                # カラムの平坦化（JRAの複雑な表構造に対応）
                 temp_cols = temp_df.columns.get_level_values(-1) if isinstance(temp_df.columns, pd.MultiIndex) else temp_df.columns
-                if "馬番" in temp_cols or "馬名" in temp_cols:
+                
+                # 【修正の核心】「馬番(または枠番)」と「馬名」の両方が揃っている本物の出馬表だけを厳格に探す
+                col_list = list(temp_cols)
+                has_horse_num = ("馬番" in col_list) or ("枠番" in col_list)
+                has_horse_name = "馬名" in col_list
+                
+                if has_horse_num and has_horse_name:
                     raw_df = temp_df
                     raw_df.columns = temp_cols
                     break
             
             if raw_df.empty:
-                st.warning("⚠️ 出馬表のデータが見つかりませんでした。")
+                st.warning("⚠️ 出馬表のデータが見つかりませんでした。URLやレースIDが正しいか確認してください。")
             else:
                 cleaned_data = []
                 for _, row in raw_df.iterrows():
-                    horse_num = row.get("馬番", row.get("枠番", None))
+                    # 馬番の取得（地方・中央の表記揺れに対応）
+                    horse_num = None
+                    if "馬番" in raw_df.columns:
+                        horse_num = row["馬番"]
+                    elif "枠番" in raw_df.columns:
+                        horse_num = row["枠番"]
+                        
                     if pd.isna(horse_num): continue
                     
                     try:
@@ -76,14 +88,17 @@ if st.button("最新データを取得してフォーメーションを構築", 
                     horse_name = row.get("馬名", "")
                     if hasattr(horse_name, "str"):
                         horse_name = str(horse_name).split()[0]
+                    else:
+                        horse_name = str(horse_name)
                     
+                    # 人気・オッズの取得
                     popularity = row.get("人気", None)
                     odds = row.get("オッズ", row.get("単勝", None))
                     
                     try:
                         pop_val = int(float(str(popularity).strip()))
-                    except (ValueError, TypeError):
-                        pop_val = 99
+                    except (ValueError, TypeError, AttributeError):
+                        pop_val = 99  # 人気不明の場合は最下位扱い
                         
                     cleaned_data.append({
                         "馬番": h_num,
@@ -93,7 +108,7 @@ if st.button("最新データを取得してフォーメーションを構築", 
                     })
                 
                 if not cleaned_data:
-                    st.warning("⚠️ 有効な出走馬データを抽出できませんでした。")
+                    st.warning("⚠️ ページから有効な出走馬データを抽出できませんでした。")
                 else:
                     df = pd.DataFrame(cleaned_data).sort_values("人気").reset_index(drop=True)
                     
@@ -103,23 +118,18 @@ if st.button("最新データを取得してフォーメーションを構築", 
                     st.markdown("---")
                     st.subheader(f"🎯 選択中の戦略: {strategy}")
                     
-                    # ----------------------------------------------------
-                    # ロジックの分岐（堅実 vs 大穴）
-                    # ----------------------------------------------------
                     if "堅実" in strategy:
-                        # 1番人気軸、2〜4番人気を相手に
                         jiku_index = 0
                         partners_range = (1, 4)
                         hi_range = (4, 8)
                         mode_msg = "堅実な軸からデータ上崩れにくい上位馬へ手堅く流すロジックです。"
                     else:
-                        # 5番人気（中穴）軸、上位人気と超大穴（8〜12番人気）を相手に
-                        jiku_index = min(4, len(df)-1)
+                        jiku_index = min(4, len(df)-1) if len(df) > 4 else 0
                         partners_range = (0, 3)
                         hi_range = (7, 12)
                         mode_msg = "実力がありながら過小評価されている中穴を軸に、人気馬と超大穴を絡めて一発を狙うロジックです。"
 
-                    # データ抽出
+                    # エラー回避のための安全なデータ取得
                     jiku_horse = df.iloc[jiku_index]["馬番"] if len(df) > jiku_index else "-"
                     jiku_name = df.iloc[jiku_index]["馬名"] if len(df) > jiku_index else "-"
                     
