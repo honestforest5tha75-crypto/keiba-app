@@ -46,67 +46,86 @@ if st.button("最新データを取得してフォーメーションを構築", 
             response = requests.get(url, headers=headers)
             response.encoding = response.apparent_encoding
             
+            # HTMLからすべての表を抽出
             dfs = pd.read_html(io.StringIO(response.text))
-            raw_df = dfs[0]
             
-            if isinstance(raw_df.columns, pd.MultiIndex):
-                raw_df.columns = raw_df.columns.get_level_values(-1)
+            # 確実なデータ抽出のための検品処理：正しい出馬表テーブルを自動で探す
+            raw_df = pd.DataFrame()
+            for temp_df in dfs:
+                temp_cols = temp_df.columns.get_level_values(-1) if isinstance(temp_df.columns, pd.MultiIndex) else temp_df.columns
+                if "馬番" in temp_cols or "馬名" in temp_cols:
+                    raw_df = temp_df
+                    raw_df.columns = temp_cols  # カラム名を平坦化
+                    break
             
-            cleaned_data = []
-            for _, row in raw_df.iterrows():
-                horse_num = row.get("馬番", row.get("枠番", None))
-                if pd.isna(horse_num): continue
-                
-                horse_name = row.get("馬名", "")
-                if hasattr(horse_name, "str"):
-                    horse_name = horse_name.split()[0]
-                
-                popularity = row.get("人気", None)
-                odds = row.get("オッズ", row.get("単勝", None))
-                
-                try:
-                    pop_val = int(float(str(popularity).strip()))
-                except:
-                    pop_val = 99
-                    
-                cleaned_data.append({
-                    "馬番": int(float(str(horse_num))),
-                    "馬名": str(horse_name).strip(),
-                    "人気": pop_val,
-                    "オッズ": odds
-                })
-            
-            df = pd.DataFrame(cleaned_data).sort_values("人気").reset_index(drop=True)
-            
-            if df.empty:
-                st.warning("⚠️ データを解析できませんでした。")
+            if raw_df.empty:
+                st.warning("⚠️ 出馬表のデータが見つかりませんでした。レースIDが間違っているか、ページ構造が変更された可能性があります。")
             else:
-                st.subheader("📊 出馬表データ（人気順ソート）")
-                st.dataframe(df, use_container_width=True)
-                
-                st.markdown("---")
-                st.subheader("🎯 【新方針】データ重視の推奨買い方・資金配分")
-                
-                jiku_horse = df.iloc[0]["馬番"]
-                jiku_name = df.iloc[0]["馬名"]
-                partners = df.iloc[1:4]["馬番"].tolist()
-                hi_horses = df.iloc[4:8]["馬番"].tolist()
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.success(f"🛡️ **コア投資（予算60%）：ワイド フォーメーション**\n"
-                               f"・**軸（本命）**: {jiku_horse}番（{jiku_name}）\n"
-                               f"・**相手（対抗）**: {', '.join(map(str, partners))}番\n"
-                               f"・**資金配分**: 各 {int(budget * 0.6 / len(partners) // 100) * 100}円")
+                cleaned_data = []
+                for _, row in raw_df.iterrows():
+                    horse_num = row.get("馬番", row.get("枠番", None))
                     
-                with col2:
-                    st.error(f"🚀 **サテライト投資（予算40%）：3連複 フォーメーション**\n"
-                             f"・**1頭目（軸）**: {jiku_horse}番\n"
-                             f"・**2頭目（相手）**: {', '.join(map(str, partners))}番\n"
-                             f"・**3頭目（紐・穴）**: {', '.join(map(str, partners + hi_horses))}番\n"
-                             f"・**資金配分**: 残り予算 {int(budget * 0.4 // 100) * 100}円 を均等配分")
+                    # 馬番が空欄の場合はスキップ
+                    if pd.isna(horse_num): continue
+                    
+                    # 馬番が数字に変換できない行（表の中のヘッダー行など）はスキップ
+                    try:
+                        h_num = int(float(str(horse_num)))
+                    except ValueError:
+                        continue
+                        
+                    horse_name = row.get("馬名", "")
+                    if hasattr(horse_name, "str"):
+                        horse_name = str(horse_name).split()[0]
+                    
+                    popularity = row.get("人気", None)
+                    odds = row.get("オッズ", row.get("単勝", None))
+                    
+                    try:
+                        pop_val = int(float(str(popularity).strip()))
+                    except (ValueError, TypeError):
+                        pop_val = 99  # 人気データがない場合は99（最下位扱い）にする
+                        
+                    cleaned_data.append({
+                        "馬番": h_num,
+                        "馬名": str(horse_name).strip(),
+                        "人気": pop_val,
+                        "オッズ": odds
+                    })
+                
+                if not cleaned_data:
+                    st.warning("⚠️ 有効な出走馬データを抽出できませんでした。")
+                else:
+                    df = pd.DataFrame(cleaned_data).sort_values("人気").reset_index(drop=True)
+                    
+                    st.subheader("📊 出馬表データ（人気順ソート）")
+                    st.dataframe(df, use_container_width=True)
+                    
+                    st.markdown("---")
+                    st.subheader("🎯 【新方針】データ重視の推奨買い方・資金配分")
+                    
+                    # 安全なデータ抽出（出走頭数が少ない場合のエラー回避）
+                    jiku_horse = df.iloc[0]["馬番"] if len(df) > 0 else "-"
+                    jiku_name = df.iloc[0]["馬名"] if len(df) > 0 else "-"
+                    
+                    partners = df.iloc[1:4]["馬番"].tolist() if len(df) > 1 else []
+                    hi_horses = df.iloc[4:8]["馬番"].tolist() if len(df) > 4 else []
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.success(f"🛡️ **コア投資（予算60%）：ワイド フォーメーション**\n\n"
+                                   f"・**軸（本命）**: {jiku_horse}番（{jiku_name}）\n\n"
+                                   f"・**相手（対抗）**: {', '.join(map(str, partners))}番\n\n"
+                                   f"・**資金配分**: 各 {int(budget * 0.6 / max(len(partners), 1) // 100) * 100}円")
+                        
+                    with col2:
+                        st.error(f"🚀 **サテライト投資（予算40%）：3連複 フォーメーション**\n\n"
+                                 f"・**1頭目（軸）**: {jiku_horse}番\n\n"
+                                 f"・**2頭目（相手）**: {', '.join(map(str, partners))}番\n\n"
+                                 f"・**3頭目（紐・穴）**: {', '.join(map(str, partners + hi_horses))}番\n\n"
+                                 f"・**資金配分**: 残り予算 {int(budget * 0.4 // 100) * 100}円 を均等配分")
                 
         except Exception as e:
-            st.error(f"❌ データの取得中にエラーが発生しました。")
+            st.error(f"❌ データの取得・解析中にエラーが発生しました。")
             st.caption(f"エラー詳細: {e}")
